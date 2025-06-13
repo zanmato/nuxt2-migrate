@@ -1,0 +1,23 @@
+{
+  "name": "nuxt2-migrate",
+  "version": "1.0.0",
+  "main": "index.js",
+  "bin": {
+    "nuxt2-migrate": "./cli.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "migrate": "node cli.js"
+  },
+  "type": "module",
+  "author": "Andreas Johansson <z@zanmato.se>",
+  "license": "MIT",
+  "description": "",
+  "dependencies": {
+    "html-rewriter-wasm": "^0.4.1",
+    "prettier": "^3.5.3",
+    "tree-sitter": "^0.21.1",
+    "tree-sitter-javascript": "^0.23.1",
+    "vue-template-compiler": "^2.7.16"
+  }
+}
