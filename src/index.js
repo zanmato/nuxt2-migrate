@@ -369,10 +369,10 @@ function detectEventBusUsage(content) {
 function extractRefsUsage(scriptContent, templateContent) {
   // Extract refs from template
   const templateRefs = new Set();
-  const refMatches = templateContent.match(/ref="([^"]+)"/g);
+  const refMatches = templateContent.match(/\sref="([^"]+)"/g);
   if (refMatches) {
     refMatches.forEach((match) => {
-      const refName = match.match(/ref="([^"]+)"/)?.[1];
+      const refName = match.match(/\sref="([^"]+)"/)?.[1];
       if (refName) {
         templateRefs.add(refName);
       }
@@ -2106,7 +2106,7 @@ function transformToCompositionAPI(
       hasConfig,
       hasNextTick,
       routerData,
-      null,
+      options,
       regularMethods,
       dataProperties,
       computedData,
@@ -2114,6 +2114,11 @@ function transformToCompositionAPI(
       vuexData,
       mixinData,
     );
+
+    // Apply comprehensive store usage transformations for regular methods
+    if (options?.vuex) {
+      transformedBody = transformStoreUsageWithTreeSitter(transformedBody, options);
+    }
 
     const asyncKeyword = isAsync ? "async " : "";
 
@@ -2181,6 +2186,7 @@ function transformToCompositionAPI(
       if (options?.vuex) {
         transformedContent = transformStoreUsageInMethods(
           transformedContent,
+          vuexData,
           options,
         );
       }
@@ -2213,6 +2219,7 @@ function transformToCompositionAPI(
           if (options?.vuex) {
             transformedContent = transformStoreUsageInMethods(
               transformedContent,
+              vuexData,
               options,
             );
           }
@@ -2250,6 +2257,7 @@ function transformToCompositionAPI(
             if (options?.vuex) {
               beforeDestroyContent = transformStoreUsageInMethods(
                 beforeDestroyContent,
+                vuexData,
                 options,
               );
             }
@@ -2284,6 +2292,7 @@ function transformToCompositionAPI(
               if (options?.vuex) {
                 beforeDestroyContent = transformStoreUsageInMethods(
                   beforeDestroyContent,
+                  vuexData,
                   options,
                 );
               }
@@ -2443,25 +2452,15 @@ function transformMethodBody(
 
   // Replace this.methodName calls with appropriate transformations FIRST (before property transformations)
   if (options?.vuex) {
-    // For Vuex scenarios, check if method might be a store method
-    Object.entries(options.vuex).forEach(([namespace, config]) => {
-      const instanceName = getStoreInstanceName(config);
-      // Transform specific known store methods
-      transformedBody = transformedBody.replace(
-        new RegExp(`this\\.(\\w+)\\(`, "g"),
-        (match, methodName) => {
-          // For now, assume store methods for Vuex components
-          return `${instanceName}.${methodName}(`;
-        },
-      );
-    });
-  } else {
-    // Replace this.methodName calls with just methodName for non-Vuex scenarios
-    transformedBody = transformedBody.replace(
-      /this\.([a-zA-Z_$][a-zA-Z0-9_$]*)\(/g,
-      "$1(",
-    );
+    transformedBody = transformStoreUsageInMethods(transformedBody, vuexData, options);
   }
+
+  // Replace this.methodName calls with just methodName for non-Vuex scenarios
+  transformedBody = transformedBody.replace(
+    /this\.([a-zA-Z_$][a-zA-Z0-9_$]*)\(/g,
+    "$1(",
+  );
+
 
   // Replace Nuxt event bus usage
   if (hasEventBus) {
@@ -2552,10 +2551,9 @@ function transformThisReferencesToRefs(content) {
   return transformed.replace(/this\.(\w+)/g, "$1.value");
 }
 
-function transformStoreUsageInMethods(methodBody, options) {
+function transformStoreUsageInMethods(methodBody, vuexData, options) {
   let transformedBody = methodBody;
-
-  if (options?.vuex) {
+  if (options?.vuex && vuexData) {
     Object.entries(options.vuex).forEach(([namespace, config]) => {
       const instanceName = getStoreInstanceName(config);
 
@@ -2566,16 +2564,114 @@ function transformStoreUsageInMethods(methodBody, options) {
       );
       transformedBody = transformedBody.replace(stateRegex, "$1.value");
 
-      // Transform method calls (actions/mutations)
+      // Transform method calls (actions/mutations) only if they are defined in vuexData
       const methodRegex = new RegExp(`this\\.(\\w+)\\(`, "g");
-      transformedBody = transformedBody.replace(
-        methodRegex,
-        `${instanceName}.$1(`,
-      );
+      transformedBody = transformedBody.replace(methodRegex, (match, methodName) => {
+        // Check if this method is actually a Vuex action or mutation
+        const isVuexMethod = () => {
+          for (const mapData of vuexData?.methodProps) {
+            if (Object.keys(mapData.mappings).includes(methodName)) {
+              return true; // Found a mapping for this method
+            }
+          }
+          
+          return false;
+        };
+
+        if (isVuexMethod()) {
+          return `${instanceName}.${methodName}(`;
+        }
+        
+        // Not a Vuex method, leave it unchanged
+        return match;
+      });
     });
   }
 
   return transformedBody;
+}
+
+
+function transformStoreUsageWithTreeSitter(content, options) {
+  if (!options?.vuex) {
+    return content;
+  }
+
+  const parser = new Parser();
+  parser.setLanguage(javascript);
+  const tree = parser.parse(content);
+
+  const replacements = [];
+
+  function findRootStoreExpression(node) {
+    // Walk up the member expression chain to find the root this.$store expression
+    let current = node;
+    while (current.parent && current.parent.type === "member_expression") {
+      current = current.parent;
+    }
+    return current;
+  }
+
+  function traverse(node) {
+    if (node.type === "member_expression") {
+      const text = node.text;
+      
+      // Check if this is a this.$store pattern
+      if (text.startsWith("this.$store.state.")) {
+        // Find the root member expression to avoid nested replacements
+        const rootExpression = findRootStoreExpression(node);
+        const fullText = rootExpression.text;
+        
+        // Skip if we've already processed this expression
+        if (replacements.some(r => r.start === rootExpression.startIndex)) {
+          return;
+        }
+        
+        Object.entries(options.vuex).forEach(([namespace, config]) => {
+          const instanceName = getStoreInstanceName(config);
+          
+          // Match this.$store.state.namespace patterns
+          const statePattern = `this.$store.state.${namespace}`;
+          if (fullText.startsWith(statePattern)) {
+            let replacement;
+            if (fullText === statePattern) {
+              // Exact match: this.$store.state.namespace
+              replacement = instanceName;
+            } else if (fullText.startsWith(statePattern + ".")) {
+              // Property access: this.$store.state.namespace.property...
+              const propertyPart = fullText.substring(statePattern.length + 1);
+              replacement = `${instanceName}.${propertyPart}`;
+            } else {
+              return; // No match
+            }
+            
+            replacements.push({
+              start: rootExpression.startIndex,
+              end: rootExpression.endIndex,
+              replacement: replacement
+            });
+          }
+        });
+      }
+    }
+
+    // Traverse child nodes
+    for (const child of node.namedChildren) {
+      traverse(child);
+    }
+  }
+
+  traverse(tree.rootNode);
+
+  // Apply replacements from end to start to maintain correct indices
+  replacements.sort((a, b) => b.start - a.start);
+  
+  let result = content;
+  for (const { start, end, replacement } of replacements) {
+    result = result.substring(0, start) + replacement + result.substring(end);
+  }
+
+  return result;
 }
 
 function isVariableDefined(

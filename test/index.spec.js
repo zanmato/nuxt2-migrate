@@ -193,6 +193,22 @@ const { priceRaw } = usePrice();
         })
       },
       methods: {
+        someMethod() {
+          if (
+            this.$store.state.user.userID === '123'
+          ) {
+            console.log('YES!');
+          }
+        },
+        async postSomething() {
+          try {
+            await this.$axios.post('https://api.example.com/data', {
+              userID: this.$store.state.user.userID
+            });
+          } catch (error) {
+            console.error('Error posting data:', error);
+          }
+        },
         ...mapActions({ fetchUser: 'user/fetchUser' }),
         ...mapMutations({ updateUser: 'user/updateUser' })
       },
@@ -219,11 +235,29 @@ const { priceRaw } = usePrice();
 </template>
 <script setup>
 import { computed, onMounted } from 'vue';
+import { useHttp } from '@/composables/useHttp';
 import { useUserStore } from '@/stores/user';
 
 const userStore = useUserStore();
 const user = computed(() => userStore.getUser());
 const userID = computed(() => userStore.userID);
+const http = useHttp();
+
+const someMethod = () => {
+  if (userID.value === '123') {
+    console.log('YES!');
+  }
+};
+
+const postSomething = async () => {
+  try {
+    await http.post('https://api.example.com/data', {
+      userID: userID.value,
+    });
+  } catch (error) {
+    console.error('Error posting data:', error);
+  }
+};
 
 onMounted(() => {
   userStore.fetchUser();
@@ -797,7 +831,9 @@ const title = ref('Hello world');
   });
 
   it("should handle $refs", async () => {
-    const sfc = `<template><h1 ref="titleRef">{{ title }}</h1><div ref="cat-row"></div></template>
+    const sfc = `<template>
+    <a href="#">anchor</a><h1 ref="titleRef">{{ title }}</h1><div ref="cat-row"></div>
+    </template>
     <script>
     export default {
       data() {
@@ -819,6 +855,7 @@ const title = ref('Hello world');
 
     const expected = `
 <template>
+  <a href="#">anchor</a>
   <h1 ref="titleRef">{{ title }}</h1>
   <div ref="cat-row"></div>
 </template>
