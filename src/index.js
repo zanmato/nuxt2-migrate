@@ -220,6 +220,19 @@ async function rewriteSFC(sfc, options = {}) {
           };
         }
       });
+
+    parsed.script.content
+      .matchAll(/\$store\.state\.([^\.]+)/g)
+      .forEach((match) => {
+        const namespace = match[1];
+        if (namespace && !options.vuex[namespace]) {
+          // Create a default store configuration if it doesn't exist
+          options.vuex[namespace] = {
+            name: namespace,
+            importName: `use${namespace.charAt(0).toUpperCase() + namespace.slice(1)}Store`,
+          };
+        }
+      });
   }
 
   // Extract import rewrite information

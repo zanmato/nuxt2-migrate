@@ -1260,7 +1260,10 @@ function transformStoreUsageInMethods(methodBody, vuexData, options) {
         `this\\.\\$store\\.state\\.${namespace}\\.(\\w+)`,
         "g",
       );
-      transformedBody = transformedBody.replace(stateRegex, "$1.value");
+      transformedBody = transformedBody.replace(
+        stateRegex,
+        `${instanceName}.$1`,
+      );
 
       // Transform method calls (actions/mutations) only if they are defined in vuexData
       const methodRegex = new RegExp(`this\\.(\\w+)\\(`, "g");
