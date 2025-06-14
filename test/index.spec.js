@@ -40,7 +40,13 @@ const count = ref(0);
     export default {
       data() {
         return {
-          count: 0
+          count: 0,
+          somethingTranslated: this.$t('hello')
+        };
+      },
+      head() {
+        return {
+          title: this.$t('page.title')
         };
       },
       methods: {
@@ -62,9 +68,16 @@ const count = ref(0);
 <script setup>
 import { ref } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { useHead } from '@unhead/vue';
 
 const { t, n, d } = useI18n();
+
 const count = ref(0);
+const somethingTranslated = ref(t('hello'));
+
+useHead({
+  title: t('page.title'),
+});
 
 const greet = () => {
   return t('hello');
@@ -108,13 +121,15 @@ const greet = () => {
 import { ref } from 'vue';
 import { useHttp } from '@/composables/useHttp';
 
+const http = useHttp();
+
 const data = ref(null);
 const rows = ref(0);
-const http = useHttp();
 
 const clickHandler = () => {
   fetch();
 };
+
 const fetch = async () => {
   const res = await http.get('https://api.example.com/data');
 
@@ -171,8 +186,9 @@ fetch();
 import { ref } from 'vue';
 import { usePrice } from '@/composables/usePrice';
 
-const title = ref('Hello World');
 const { priceRaw } = usePrice();
+
+const title = ref('Hello World');
 </script>`;
 
     assert.equal(res.trim(), expected.trim());
@@ -238,10 +254,11 @@ import { computed, onMounted } from 'vue';
 import { useHttp } from '@/composables/useHttp';
 import { useUserStore } from '@/stores/user';
 
+const http = useHttp();
 const userStore = useUserStore();
+
 const user = computed(() => userStore.getUser());
 const userID = computed(() => userStore.userID);
-const http = useHttp();
 
 const someMethod = () => {
   if (userID.value === '123') {
@@ -452,6 +469,7 @@ import { ref } from 'vue';
 import { useHead } from '@unhead/vue';
 
 const title = ref('Hello World');
+
 useHead({
   title: title.value,
 });
@@ -494,6 +512,7 @@ import { ref } from 'vue';
 import { useHead } from '@unhead/vue';
 
 const title = ref('Hello World');
+
 useHead(() => {
   const head = {
     title: title.value,
@@ -542,6 +561,7 @@ import { useI18nUtils } from '@/composables/useI18nUtils';
 
 const { locale } = useI18n();
 const { localePath, localeProperties } = useI18nUtils();
+
 const title = ref(localeProperties.brand);
 
 onMounted(() => {
@@ -582,6 +602,7 @@ const data = await useAsyncData(async ({ $axios, app, redirect, params }) => {
   const data = await $axios.get('https://api.example.com/data');
   return { title: data.title };
 });
+
 const title = ref(data.title);
 </script>`;
 
@@ -765,13 +786,15 @@ onDeactivated(() => {
 import { ref, onMounted, onBeforeUnmount } from 'vue';
 import { useEventBus } from '@/composables/useEventBus';
 
-const title = ref('Hello world');
 const eventBus = useEventBus();
-function handleCustomEvent(data) {
+
+const title = ref('Hello world');
+
+const handleCustomEvent = (data) => {
   console.log('Custom event received:', data);
 
   eventBus.emit('another-event', { message: 'Hello from custom event' });
-}
+};
 
 onMounted(() => {
   eventBus.on('custom-event', handleCustomEvent);
@@ -903,6 +926,7 @@ import { useRuntimeConfig } from '@/composables/useRuntimeConfig';
 
 const { locale } = useI18n();
 const config = useRuntimeConfig();
+
 const title = ref(config[locale.value].appName);
 </script>`;
 
@@ -973,9 +997,10 @@ onMounted(() => {
 import { ref, onMounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-const title = ref('Hello world');
 const route = useRoute();
 const router = useRouter();
+
+const title = ref('Hello world');
 
 onMounted(() => {
   console.log(route.path);
@@ -1067,8 +1092,9 @@ onBeforeUnmount(() => {
 import { ref, onMounted } from 'vue';
 import { useHttp } from '@/composables/useHttp';
 
-const title = ref('Hello world');
 const http = useHttp();
+
+const title = ref('Hello world');
 
 const fetchData = async () => {
   const res = await http.get('https://api.example.com/data');
@@ -1125,6 +1151,7 @@ import { computed, onMounted } from 'vue';
 import { useUserStore } from '@/stores/user';
 
 const userStore = useUserStore();
+
 const userID = computed(() => userStore.userID);
 const user = computed(() => userStore.getUser());
 
@@ -1168,7 +1195,7 @@ const title = ref('Hello world');
 
 onMounted(() => {
   // FIXME: undefined variable 'nonExistentVariable'
-  // console.log(this.nonExistentVariable);
+  console.log(nonExistentVariable.value);
 });
 </script>`;
 
@@ -1208,8 +1235,9 @@ onMounted(() => {
 import { ref, onMounted } from 'vue';
 import { useUserStore } from '@/stores/user';
 
-const title = ref('Hello world');
 const userStore = useUserStore();
+
+const title = ref('Hello world');
 
 onMounted(() => {
   userStore.updateUser({ name: 'New User' });
@@ -1265,6 +1293,8 @@ onMounted(() => {
 import { ref } from 'vue';
 import { useHttp } from '@/composables/useHttp';
 
+const http = useHttp();
+
 const title = ref('Hello world');
 const messageSent = ref(false);
 const sending = ref(false);
@@ -1273,7 +1303,6 @@ const form = ref({
   name: '',
   email: '',
 });
-const http = useHttp();
 
 const handleClick = () => {
   sending.value = true;
@@ -1355,14 +1384,15 @@ import { ref, watch } from 'vue';
 
 const title = ref('Hello world');
 const count = ref(0);
-watch(count, (newVal, oldVal) => {
-  console.log('Count changed from', oldVal, 'to', newVal);
-  shout();
-});
 
 const shout = () => {
   console.log('Shouting:', title.value);
 };
+
+watch(count, (newVal, oldVal) => {
+  console.log('Count changed from', oldVal, 'to', newVal);
+  shout();
+});
 </script>`;
 
     assert.equal(res.trim(), expected.trim());
@@ -1449,6 +1479,8 @@ export default {
 import { computed } from 'vue';
 import { useHttp } from '@/composables/useHttp';
 
+const http = useHttp();
+
 const props = defineProps({
   productSku: {
     type: String,
@@ -1459,7 +1491,9 @@ const props = defineProps({
     default: () => false,
   },
 });
+
 const emit = defineEmits(['update:value']);
+
 const showModal = computed({
   get() {
     return props.value;
@@ -1468,7 +1502,6 @@ const showModal = computed({
     emit('update:value', v);
   },
 });
-const http = useHttp();
 
 const notify = () => {
   http.post('/api/product-bulk-order', {

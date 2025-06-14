@@ -1482,6 +1482,9 @@ function extractMethodsAndFetch(tree, content) {
       const nameNode = node.namedChildren.find(
         (child) => child.type === "property_identifier",
       );
+      const paramsNode = node.namedChildren.find(
+        (child) => child.type === "formal_parameters",
+      );
       const bodyNode = node.namedChildren.find(
         (child) => child.type === "statement_block",
       );
@@ -1502,6 +1505,11 @@ function extractMethodsAndFetch(tree, content) {
           bodyNode.endIndex,
         );
 
+        // Extract parameters if they exist
+        const parameters = paramsNode
+          ? content.slice(paramsNode.startIndex, paramsNode.endIndex)
+          : "()";
+
         // Check if method is async by looking at the full method definition
         const fullMethodDef = content.slice(node.startIndex, node.endIndex);
         const isAsync = fullMethodDef.includes("async ");
@@ -1512,6 +1520,7 @@ function extractMethodsAndFetch(tree, content) {
         } else {
           regularMethods[methodName] = {
             content: methodContent,
+            parameters: parameters,
             isAsync: isAsync,
           };
         }
@@ -1815,7 +1824,8 @@ function transformToCompositionAPI(
 
   result += "\n";
 
-  // Add i18n destructuring if needed (before data properties)
+  // === 2. USES (COMPOSABLES) ===
+  // Add i18n destructuring
   if (hasStandardI18n) {
     const standardMethods = Array.from(i18nMethods).filter((method) =>
       standardI18nMethods.has(method),
@@ -1834,6 +1844,45 @@ function transformToCompositionAPI(
     }
   }
 
+  // Add mixin destructuring (only for used imports)
+  if (mixinData && mixinData.usedMixins.length > 0) {
+    mixinData.usedMixins.forEach((mixin) => {
+      // Filter imports to only include those used in template
+      const usedImports = mixin.config.imports.filter((importName) =>
+        templateVariables.has(importName),
+      );
+
+      if (usedImports.length > 0) {
+        const imports = usedImports.join(", ");
+        result += `\nconst { ${imports} } = ${mixin.config.name}();`;
+      }
+    });
+  }
+
+  // Add composables
+  if (hasAxios) {
+    result += `\nconst http = useHttp();`;
+  }
+
+  if (hasEventBus) {
+    result += `\nconst eventBus = useEventBus();`;
+  }
+
+  // Add router composables
+  if (routerData && routerData.hasRouterUsage) {
+    if (routerData.hasRoute) {
+      result += `\nconst route = useRoute();`;
+    }
+    if (routerData.hasRouter) {
+      result += `\nconst router = useRouter();`;
+    }
+  }
+
+  // Add config composable
+  if (hasConfig) {
+    result += `\nconst config = useRuntimeConfig();`;
+  }
+
   // Add store instances
   if (vuexData && vuexData.usedStores.size > 0) {
     vuexData.usedStores.forEach((namespace) => {
@@ -1845,6 +1894,65 @@ function transformToCompositionAPI(
     });
   }
 
+  // Add store instances for direct store usage
+  if (hasDirectStoreUsage && options?.vuex) {
+    Object.entries(options.vuex).forEach(([namespace, storeConfig]) => {
+      // Only add if not already added by vuexData
+      if (!vuexData?.usedStores.has(namespace)) {
+        const instanceName = getStoreInstanceName(storeConfig);
+        result += `\nconst ${instanceName} = ${storeConfig.importName}();`;
+      }
+    });
+  }
+
+  result += "\n\n";
+
+  // === 3. REACTIVE STATE, REFS AND EMITS ===
+  // Add props definition
+  if (propsData) {
+    result += `\nconst props = defineProps(${propsData});\n`;
+  }
+
+  // Add emits definition
+  if (emitsData && emitsData.length > 0) {
+    const emitsArray = emitsData.map((emit) => `'${emit}'`).join(", ");
+    result += `\nconst emit = defineEmits([${emitsArray}]);\n`;
+  }
+
+  // Add data properties as refs (excluding those returned by asyncData)
+  const asyncDataProps = asyncDataMethod
+    ? new Set(asyncDataMethod.returnProperties)
+    : new Set();
+  Object.entries(dataProperties).forEach(([key, value]) => {
+    // Skip properties that are returned by asyncData
+    if (!asyncDataProps.has(key)) {
+      // Transform this.$i18n and this.$config references in data property values
+      let transformedValue = value
+        .replace(/this\.\$([tnd])\(/g, "$1(") // Replace this.$t( with t(
+        .replace(/this\.\$i18n\.localeProperties/g, "localeProperties")
+        .replace(/this\.\$i18n\.locale/g, "locale.value")
+        .replace(/this\.\$config/g, "config");
+      result += `\nconst ${key} = ref(${transformedValue});`;
+    }
+  });
+
+  // Add template refs
+  if (refsData && refsData.hasRefs) {
+    const allRefs = new Set([...refsData.templateRefs, ...refsData.scriptRefs]);
+    allRefs.forEach((refName) => {
+      // Normalize ref name for valid JavaScript variable (convert to camelCase)
+      const normalizedName = refName.replace(/-([a-z])/g, (match, letter) =>
+        letter.toUpperCase(),
+      );
+      // Avoid double "Ref" suffix if the name already ends with "Ref"
+      const varName = normalizedName.endsWith("Ref")
+        ? normalizedName
+        : `${normalizedName}Ref`;
+      result += `\nconst ${varName} = useTemplateRef('${refName}');`;
+    });
+  }
+
+  // === 4. COMPUTED PROPERTIES ===
   // Add computed properties from Vuex mappers
   if (vuexData && vuexData.computedProps.length > 0) {
     vuexData.computedProps.forEach((mapData) => {
@@ -1861,85 +1969,6 @@ function transformToCompositionAPI(
           }
         }
       });
-    });
-  }
-
-  // Add props definition
-  if (propsData) {
-    result += `\nconst props = defineProps(${propsData});`;
-  }
-
-  // Add emits definition
-  if (emitsData && emitsData.length > 0) {
-    const emitsArray = emitsData.map((emit) => `'${emit}'`).join(", ");
-    result += `\nconst emit = defineEmits([${emitsArray}]);`;
-  }
-
-  // Add config composable before data properties that might use it
-  if (hasConfig) {
-    result += `\nconst config = useRuntimeConfig();`;
-  }
-
-  // Add data properties as refs (excluding those returned by asyncData)
-  const asyncDataProps = asyncDataMethod
-    ? new Set(asyncDataMethod.returnProperties)
-    : new Set();
-  Object.entries(dataProperties).forEach(([key, value]) => {
-    // Skip properties that are returned by asyncData
-    if (!asyncDataProps.has(key)) {
-      // Transform this.$i18n and this.$config references in data property values
-      let transformedValue = value
-        .replace(/this\.\$i18n\.localeProperties/g, "localeProperties")
-        .replace(/this\.\$i18n\.locale/g, "locale.value")
-        .replace(/this\.\$config/g, "config");
-      result += `\nconst ${key} = ref(${transformedValue});`;
-    }
-  });
-
-  // Add watchers after data properties
-  if (watchData && Object.keys(watchData).length > 0) {
-    Object.entries(watchData).forEach(([watchName, watchConfig]) => {
-      if (watchConfig.type === "function") {
-        // Extract parameters and body from function
-        let functionContent = watchConfig.content;
-        const paramsMatch = functionContent.match(/\(([^)]*)\)/);
-        const params = paramsMatch ? paramsMatch[1] : "newVal, oldVal";
-
-        // Extract function body
-        const bodyMatch = functionContent.match(/\{([\s\S]*)\}$/);
-        let body = bodyMatch ? bodyMatch[1].trim() : "";
-
-        // Transform this references in watcher body
-        body = transformMethodBody(
-          body,
-          hasAxios,
-          hasEventBus,
-          refsData,
-          hasConfig,
-          hasNextTick,
-          routerData,
-          options,
-          regularMethods,
-          dataProperties,
-          computedData,
-          propsData,
-          vuexData,
-          mixinData,
-        );
-
-        result += `\nwatch(${watchName}, (${params}) => {\n  ${body}\n});`;
-      }
-    });
-  }
-
-  // Add store instances for direct store usage (after data properties)
-  if (hasDirectStoreUsage && options?.vuex) {
-    Object.entries(options.vuex).forEach(([namespace, storeConfig]) => {
-      // Only add if not already added by vuexData
-      if (!vuexData?.usedStores.has(namespace)) {
-        const instanceName = getStoreInstanceName(storeConfig);
-        result += `\nconst ${instanceName} = ${storeConfig.importName}();`;
-      }
     });
   }
 
@@ -2010,6 +2039,7 @@ function transformToCompositionAPI(
     });
   }
 
+  // === 5. METHODS (INCLUDING FETCH AND ASYNCDATA) ===
   // Add asyncData transformation
   if (asyncDataMethod) {
     // Transform asyncData to useAsyncData call
@@ -2017,7 +2047,7 @@ function transformToCompositionAPI(
     // Remove the opening and closing braces
     asyncContent = asyncContent.replace(/^\s*{\s*/, "").replace(/\s*}\s*$/, "");
 
-    result += `\nconst data = await useAsyncData(async ${asyncDataMethod.parameters} => {\n${asyncContent}\n});`;
+    result += `\n\nconst data = await useAsyncData(async ${asyncDataMethod.parameters} => {\n${asyncContent}\n});\n`;
 
     // Create refs for each property returned by asyncData
     asyncDataMethod.returnProperties.forEach((prop) => {
@@ -2031,72 +2061,23 @@ function transformToCompositionAPI(
       // Simple case: useHead({ ... })
       let headContent = headMethod.content;
       headContent = transformThisReferencesToRefs(headContent);
-      result += `\nuseHead(${headContent});`;
+      result += `\n\nuseHead(${headContent});`;
     } else {
       // Complex case: useHead(() => { ... })
       let headContent = headMethod.content;
       headContent = transformThisReferencesToRefs(headContent);
       // Remove the opening and closing braces
       headContent = headContent.replace(/^\s*{\s*/, "").replace(/\s*}\s*$/, "");
-      result += `\nuseHead(() => {\n${headContent}\n});`;
+      result += `\n\nuseHead(() => {\n${headContent}\n});`;
     }
   }
 
-  // Add mixin destructuring (only for used imports)
-  if (mixinData && mixinData.usedMixins.length > 0) {
-    mixinData.usedMixins.forEach((mixin) => {
-      // Filter imports to only include those used in template
-      const usedImports = mixin.config.imports.filter((importName) =>
-        templateVariables.has(importName),
-      );
-
-      if (usedImports.length > 0) {
-        const imports = usedImports.join(", ");
-        result += `\nconst { ${imports} } = ${mixin.config.name}();`;
-      }
-    });
-  }
-
-  // Add composables
-  if (hasAxios) {
-    result += `\nconst http = useHttp();`;
-  }
-
-  if (hasEventBus) {
-    result += `\nconst eventBus = useEventBus();`;
-  }
-
-  // Add router composables
-  if (routerData && routerData.hasRouterUsage) {
-    if (routerData.hasRoute) {
-      result += `\nconst route = useRoute();`;
-    }
-    if (routerData.hasRouter) {
-      result += `\nconst router = useRouter();`;
-    }
-  }
-
-  // Add template refs
-  if (refsData && refsData.hasRefs) {
-    const allRefs = new Set([...refsData.templateRefs, ...refsData.scriptRefs]);
-    allRefs.forEach((refName) => {
-      // Normalize ref name for valid JavaScript variable (convert to camelCase)
-      const normalizedName = refName.replace(/-([a-z])/g, (match, letter) =>
-        letter.toUpperCase(),
-      );
-      // Avoid double "Ref" suffix if the name already ends with "Ref"
-      const varName = normalizedName.endsWith("Ref")
-        ? normalizedName
-        : `${normalizedName}Ref`;
-      result += `\nconst ${varName} = useTemplateRef('${refName}');`;
-    });
-  }
-
-  // Add regular methods as arrow functions (before lifecycle methods)
+  // Add regular methods as arrow functions
   Object.entries(regularMethods).forEach(([methodName, methodData]) => {
     const methodBody =
       typeof methodData === "string" ? methodData : methodData.content;
     const isAsync = typeof methodData === "object" ? methodData.isAsync : false;
+    const parameters = typeof methodData === "object" ? methodData.parameters : "()";
 
     let transformedBody = transformMethodBody(
       methodBody,
@@ -2122,12 +2103,7 @@ function transformToCompositionAPI(
 
     const asyncKeyword = isAsync ? "async " : "";
 
-    // For event bus methods with parameters, use function declaration
-    if (hasEventBus && methodBody.includes("data)")) {
-      result += `\n${asyncKeyword}function ${methodName}(data) {\n${transformedBody}\n}`;
-    } else {
-      result += `\n\nconst ${methodName} = ${asyncKeyword}() => {\n${transformedBody}\n};`;
-    }
+    result += `\n\nconst ${methodName} = ${asyncKeyword}${parameters} => {\n${transformedBody}\n};`;
   });
 
   // Add fetch method as arrow function if it exists
@@ -2148,10 +2124,46 @@ function transformToCompositionAPI(
       vuexData,
       mixinData,
     );
-    result += `\nconst fetch = async () => {\n${transformedFetchBody}\n};`;
+    result += `\n\nconst fetch = async () => {\n${transformedFetchBody}\n};\n\n`;
   }
 
-  // Add lifecycle methods
+  // === 6. WATCHERS ===
+  if (watchData && Object.keys(watchData).length > 0) {
+    Object.entries(watchData).forEach(([watchName, watchConfig]) => {
+      if (watchConfig.type === "function") {
+        // Extract parameters and body from function
+        let functionContent = watchConfig.content;
+        const paramsMatch = functionContent.match(/\(([^)]*)\)/);
+        const params = paramsMatch ? paramsMatch[1] : "newVal, oldVal";
+
+        // Extract function body
+        const bodyMatch = functionContent.match(/\{([\s\S]*)\}$/);
+        let body = bodyMatch ? bodyMatch[1].trim() : "";
+
+        // Transform this references in watcher body
+        body = transformMethodBody(
+          body,
+          hasAxios,
+          hasEventBus,
+          refsData,
+          hasConfig,
+          hasNextTick,
+          routerData,
+          options,
+          regularMethods,
+          dataProperties,
+          computedData,
+          propsData,
+          vuexData,
+          mixinData,
+        );
+
+        result += `\n\nwatch(${watchName}, (${params}) => {\n  ${body}\n});`;
+      }
+    });
+  }
+
+  // === 7. LIFECYCLE HOOKS ===
   if (lifecycleMethods && Object.keys(lifecycleMethods).length > 0) {
     const lifecycleMapping = {
       mounted: "onMounted",
@@ -2308,7 +2320,7 @@ function transformToCompositionAPI(
     );
   }
 
-  // Execute fetch method if it exists
+  // === 8. FETCH EXECUTIONS ===
   if (fetchMethod) {
     result += `\n\nfetch();`;
   }
@@ -2428,7 +2440,7 @@ function transformMethodBody(
       if (!isDefinedVariable) {
         // Comment out the entire line and add FIXME
         const indent = line.match(/^(\s*)/)?.[1] || "";
-        return `${indent}// FIXME: undefined variable '${propName}'\n${indent}// ${trimmedLine}`;
+        return `${indent}// FIXME: undefined variable '${propName}'\n${indent}${trimmedLine}`;
       }
     }
     return line;
@@ -2443,7 +2455,7 @@ function transformMethodBody(
   }
 
   // Replace $fetch() calls
-  transformedBody = transformedBody.replace(/this\.\$fetch\(\)/g, "fetch()");
+  transformedBody = transformedBody.replace(/this\.\$fetch/g, "fetch");
 
   // Replace nextTick usage before generic method transformations
   if (hasNextTick) {
@@ -2544,6 +2556,7 @@ function transformMethodBody(
 function transformThisReferencesToRefs(content) {
   // Transform this.$i18n.locale and this.$i18n.localeProperties first
   let transformed = content
+    .replace(/this\.\$([tnd])\(/g, "$1(") // Replace this.$t( with t(
     .replace(/this\.\$i18n\.locale/g, "locale.value")
     .replace(/this\.\$i18n\.localeProperties/g, "localeProperties");
 
