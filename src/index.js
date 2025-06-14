@@ -42,7 +42,8 @@ async function rewriteSFC(sfc, options = {}) {
     // Apply global template transformations before HTMLRewriter
     templateContent = templateContent
       .replace(/\$i18n\.locale/g, "locale")
-      .replace(/\$([tnd])\(/g, "$1(");
+      .replace(/\$([tnd])\(/g, "$1(")
+      .replace(/\$config/g, "config");
 
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
@@ -74,6 +75,9 @@ async function rewriteSFC(sfc, options = {}) {
             if (name.startsWith("v-")) {
               templateVariables.add(name);
             }
+          } else if (name === "src" && element.tagName === "img" && value.startsWith("~")) {
+            // Handle image src paths
+            element.setAttribute("src", value.replace(/^~\//, "@/")); // Normalize ~ to @
           }
         }
       },
@@ -94,6 +98,9 @@ async function rewriteSFC(sfc, options = {}) {
 
         // Transform $i18n.locale to locale
         content = content.replace(/\$i18n\.locale/g, "locale");
+
+        // Transform $config to config
+        content = content.replace(/\$config/g, "config");
 
         // Transform $store usage in template
         if (options.vuex) {
@@ -160,6 +167,24 @@ async function rewriteSFC(sfc, options = {}) {
   // Detect direct $store usage (commit/dispatch)
   const hasDirectStoreUsage = detectDirectStoreUsage(parsed.script.content);
 
+  // Extract namespaces from direct store usage
+  if (hasDirectStoreUsage) {
+    if (!options.vuex) {
+      options.vuex = {};
+    }
+
+    parsed.script.content.matchAll(/\$store\.(commit|dispatch)\(['"]([^'"]+)['"]/g).forEach((match) => { 
+      const namespace = match[2].split("/")[0];
+      if (namespace && !options.vuex[namespace]) {
+        // Create a default store configuration if it doesn't exist
+        options.vuex[namespace] = {
+          name: namespace,
+          importName: `use${namespace.charAt(0).toUpperCase() + namespace.slice(1)}Store`,
+        };
+      }
+    });
+  }
+
   // Extract import rewrite information
   const importRewriteData = extractImportRewriteData(
     jsTree,
@@ -181,8 +206,14 @@ async function rewriteSFC(sfc, options = {}) {
   }
   const hasAxios = detectAxiosUsage(scriptContentWithoutAsync);
 
+  // Detect filters usage
+  const hasFilters = detectFiltersUsage(parsed.script.content);
+
   // Detect Nuxt event bus usage
   const hasEventBus = detectEventBusUsage(parsed.script.content);
+
+  // Detect Nuxt compatibility functions usage
+  const hasNuxtCompat = detectNuxtCompatUsage(parsed.script.content);
 
   // Detect $refs usage
   const refsData = extractRefsUsage(
@@ -225,6 +256,7 @@ async function rewriteSFC(sfc, options = {}) {
     fetchMethod,
     i18nMethods,
     hasAxios,
+    hasFilters,
     mixinData,
     vuexData,
     importRewriteData,
@@ -237,6 +269,7 @@ async function rewriteSFC(sfc, options = {}) {
     watchData,
     emitsData,
     hasEventBus,
+    hasNuxtCompat,
     refsData,
     hasConfig,
     hasNextTick,
@@ -358,11 +391,22 @@ function detectAxiosUsage(content) {
   return content.includes("$axios");
 }
 
+function detectFiltersUsage(content) {
+  return content.includes("$options.filters");
+}
+
 function detectEventBusUsage(content) {
   return (
     content.includes("$nuxt.$on") ||
     content.includes("$nuxt.$off") ||
     content.includes("$nuxt.$emit")
+  );
+}
+
+function detectNuxtCompatUsage(content) {
+  return (
+    content.includes("$nuxt.refresh") ||
+    content.includes("$nuxt.context.redirect")
   );
 }
 
@@ -730,12 +774,29 @@ function parseMapFunction(mapFunction, args, content, vuexData, options, type) {
     }
   }
 
+  // For mapGetters, analyze the original code to see if each getter is called as a function
+  const functionUsage = {};
+  if (mapFunction === "mapGetters") {
+    Object.entries(mappings).forEach(([localName, storePath]) => {
+      // Extract the actual getter name from the path
+      let getterName = storePath;
+      if (typeof storePath === "string" && storePath.includes("/")) {
+        getterName = storePath.split("/")[1];
+      }
+      
+      // Use naming convention: getters starting with 'get' should be called as functions
+      // This is a reliable approach that works well with Vuex/Pinia conventions
+      functionUsage[localName] = getterName.startsWith('get');
+    });
+  }
+
   // Store the mapping information
   const mapData = {
     type: mapFunction,
     namespace,
     mappings,
     category: type,
+    functionUsage, // Add function usage information
   };
 
   if (type === "computed") {
@@ -748,6 +809,28 @@ function parseMapFunction(mapFunction, args, content, vuexData, options, type) {
   if (namespace && options.vuex && options.vuex[namespace]) {
     vuexData.usedStores.add(namespace);
   }
+  
+  // Also track stores from embedded namespaces in mappings
+  Object.values(mappings).forEach((value) => {
+    if (typeof value === "string" && value.includes("/")) {
+      const embeddedNamespace = value.split("/")[0];
+      
+      // Always add the store, creating a default configuration if needed
+      vuexData.usedStores.add(embeddedNamespace);
+      
+      // Create default store configuration if not provided
+      if (!options.vuex) {
+        options.vuex = {};
+      }
+      if (!options.vuex[embeddedNamespace]) {
+        const capitalizedName = embeddedNamespace.charAt(0).toUpperCase() + embeddedNamespace.slice(1);
+        options.vuex[embeddedNamespace] = {
+          name: embeddedNamespace,
+          importName: `use${capitalizedName}Store`,
+        };
+      }
+    }
+  });
 }
 
 function parseObjectMappings(objectNode, content) {
@@ -847,7 +930,8 @@ function extractImportRewriteData(tree, content, options) {
         (child) => child.type === "string",
       );
       if (sourceNode) {
-        const importPath = sourceNode.text.replace(/['"]/g, "");
+        // Replace ~ with @ in import path
+        const importPath = sourceNode.text.replace(/['"]/g, "").replace(/^~\//g, "@/");
         const importClause = node.namedChildren.find(
           (child) => child.type === "import_clause",
         );
@@ -883,6 +967,7 @@ function extractImportRewriteData(tree, content, options) {
                 }
               }
             });
+
             importData.existingImports[importPath] = components;
           }
         }
@@ -1348,6 +1433,23 @@ function extractComputedProperties(tree, content) {
                 computedProperties[key] = { type: "function", value };
               }
             }
+          } else if (prop.type === "method_definition") {
+            // Handle computed properties defined with method syntax: thumbURL() { ... }
+            const methodName = prop.namedChildren.find(
+              (child) => child.type === "property_identifier",
+            );
+            const methodBody = prop.namedChildren.find(
+              (child) => child.type === "statement_block",
+            );
+
+            if (methodName && methodBody) {
+              const key = methodName.text;
+              const value = content.slice(
+                methodBody.startIndex,
+                methodBody.endIndex,
+              );
+              computedProperties[key] = { type: "function", value };
+            }
           }
         });
       }
@@ -1429,19 +1531,36 @@ function extractMethodsAndFetch(tree, content) {
       ) {
         valueNode.namedChildren.forEach((prop) => {
           if (prop.type === "pair") {
+            const propKey = prop.namedChildren[0];
             const propValue = prop.namedChildren[1];
-            if (propValue && propValue.type === "object") {
-              // This is a getter/setter computed property, collect method names
-              propValue.namedChildren.forEach((method) => {
-                if (method.type === "method_definition") {
-                  const methodName = method.namedChildren.find(
-                    (child) => child.type === "property_identifier",
-                  );
-                  if (methodName) {
-                    computedMethodNames.add(methodName.text);
+            
+            if (propKey && propValue) {
+              const key = propKey.text.replace(/["']/g, "");
+              
+              if (propValue.type === "object") {
+                // This is a getter/setter computed property, collect method names
+                propValue.namedChildren.forEach((method) => {
+                  if (method.type === "method_definition") {
+                    const methodName = method.namedChildren.find(
+                      (child) => child.type === "property_identifier",
+                    );
+                    if (methodName) {
+                      computedMethodNames.add(methodName.text);
+                    }
                   }
-                }
-              });
+                });
+              } else {
+                // This is a simple computed property function
+                computedMethodNames.add(key);
+              }
+            }
+          } else if (prop.type === "method_definition") {
+            // Handle computed properties defined with method syntax: thumbURL() { ... }
+            const methodName = prop.namedChildren.find(
+              (child) => child.type === "property_identifier",
+            );
+            if (methodName) {
+              computedMethodNames.add(methodName.text);
             }
           }
         });
@@ -1556,6 +1675,7 @@ function transformToCompositionAPI(
   fetchMethod,
   i18nMethods,
   hasAxios,
+  hasFilters,
   mixinData,
   vuexData,
   importRewriteData,
@@ -1568,6 +1688,7 @@ function transformToCompositionAPI(
   watchData,
   emitsData,
   hasEventBus,
+  hasNuxtCompat,
   refsData,
   hasConfig,
   hasNextTick,
@@ -1675,6 +1796,11 @@ function transformToCompositionAPI(
     result += "\nimport { useI18nUtils } from '@/composables/useI18nUtils';";
   }
 
+  // Add useFilters import if needed
+  if (hasFilters) {
+    result += "\nimport { useFilters } from '@/composables/useFilters';";
+  }
+
   // Add useHead import if needed
   if (headMethod) {
     result += "\nimport { useHead } from '@unhead/vue';";
@@ -1688,6 +1814,11 @@ function transformToCompositionAPI(
   // Add useEventBus import if needed
   if (hasEventBus) {
     result += "\nimport { useEventBus } from '@/composables/useEventBus';";
+  }
+
+  // Add useNuxtCompat import if needed
+  if (hasNuxtCompat) {
+    result += "\nimport { useNuxtCompat } from '@/composables/useNuxtCompat';";
   }
 
   // Add useRuntimeConfig import if needed
@@ -1844,6 +1975,40 @@ function transformToCompositionAPI(
     }
   }
 
+  // Add filters destructuring
+  if (hasFilters) {
+    // Extract filter names from $options.filters usage
+    const filterNames = new Set();
+    
+    // Look for patterns like this.$options.filters.filterName
+    Object.values(regularMethods).forEach(method => {
+      const filterMatches = method.content.match(/this\.\$options\.filters\.(\w+)/g);
+      if (filterMatches) {
+        filterMatches.forEach(match => {
+          const filterName = match.replace('this.$options.filters.', '');
+          filterNames.add(filterName);
+        });
+      }
+    });
+    
+    // Also check computed properties
+    Object.values(computedData).forEach(computed => {
+      const content = computed.type === 'function' ? computed.value : 
+                    (computed.value.get || computed.value.set || '');
+      const filterMatches = content.match(/this\.\$options\.filters\.(\w+)/g);
+      if (filterMatches) {
+        filterMatches.forEach(match => {
+          const filterName = match.replace('this.$options.filters.', '');
+          filterNames.add(filterName);
+        });
+      }
+    });
+    
+    if (filterNames.size > 0) {
+      result += `\nconst { ${Array.from(filterNames).join(", ")} } = useFilters();`;
+    }
+  }
+
   // Add mixin destructuring (only for used imports)
   if (mixinData && mixinData.usedMixins.length > 0) {
     mixinData.usedMixins.forEach((mixin) => {
@@ -1866,6 +2031,11 @@ function transformToCompositionAPI(
 
   if (hasEventBus) {
     result += `\nconst eventBus = useEventBus();`;
+  }
+
+  // Add Nuxt compatibility composable
+  if (hasNuxtCompat) {
+    result += `\nconst { refresh, redirect } = useNuxtCompat();`;
   }
 
   // Add router composables
@@ -1957,15 +2127,30 @@ function transformToCompositionAPI(
   if (vuexData && vuexData.computedProps.length > 0) {
     vuexData.computedProps.forEach((mapData) => {
       Object.entries(mapData.mappings).forEach(([localName, storePath]) => {
-        const storeConfig = options?.vuex?.[mapData.namespace];
+        // Extract namespace from the storePath if it contains a slash
+        let namespace = mapData.namespace;
+        let actualPath = storePath;
+        
+        if (typeof storePath === "string" && storePath.includes("/")) {
+          const parts = storePath.split("/");
+          namespace = parts[0];
+          actualPath = parts[1];
+        }
+        
+        const storeConfig = options?.vuex?.[namespace];
         if (storeConfig) {
           const instanceName = getStoreInstanceName(storeConfig);
           if (mapData.type === "mapState") {
-            result += `\nconst ${localName} = computed(() => ${instanceName}.${storePath});`;
+            result += `\nconst ${localName} = computed(() => ${instanceName}.${actualPath});`;
           } else if (mapData.type === "mapGetters") {
-            // For getters, remove the namespace prefix from the path
-            const getterName = storePath.replace(`${mapData.namespace}/`, "");
-            result += `\nconst ${localName} = computed(() => ${instanceName}.${getterName}());`;
+            // Check if getter should be called as function based on original code usage
+            const shouldCallAsFunction = mapData.functionUsage && mapData.functionUsage[localName];
+            // console.log(`Processing getter ${localName}: shouldCallAsFunction = ${shouldCallAsFunction}, functionUsage:`, mapData.functionUsage);
+            if (shouldCallAsFunction) {
+              result += `\nconst ${localName} = computed(() => ${instanceName}.${actualPath}());`;
+            } else {
+              result += `\nconst ${localName} = computed(() => ${instanceName}.${actualPath});`;
+            }
           }
         }
       });
@@ -1974,6 +2159,7 @@ function transformToCompositionAPI(
 
   // Add computed properties
   if (computedData && Object.keys(computedData).length > 0) {
+    result += `\n`;
     Object.entries(computedData).forEach(([key, propData]) => {
       if (propData.type === "getterSetter") {
         let getterContent = propData.value.get || "{}";
@@ -1985,8 +2171,10 @@ function transformToCompositionAPI(
           getterContent,
           hasAxios,
           hasEventBus,
+          hasNuxtCompat,
           refsData,
           hasConfig,
+          hasFilters,
           hasNextTick,
           routerData,
           options,
@@ -2001,8 +2189,10 @@ function transformToCompositionAPI(
           setterContent,
           hasAxios,
           hasEventBus,
+          hasNuxtCompat,
           refsData,
           hasConfig,
+          hasFilters,
           hasNextTick,
           routerData,
           options,
@@ -2014,7 +2204,7 @@ function transformToCompositionAPI(
           mixinData,
         );
 
-        result += `\nconst ${key} = computed({\n  get() ${getterContent},\n  set(v) ${setterContent}\n});`;
+        result += `\nconst ${key} = computed({\n  get() ${getterContent},\n  set(v) ${setterContent}\n});\n`;
       } else if (propData.type === "function") {
         // Handle simple computed properties (not implemented in current test)
         let computedContent = propData.value;
@@ -2022,8 +2212,10 @@ function transformToCompositionAPI(
           computedContent,
           hasAxios,
           hasEventBus,
+          hasNuxtCompat,
           refsData,
           hasConfig,
+          hasFilters,
           hasNextTick,
           routerData,
           options,
@@ -2034,7 +2226,7 @@ function transformToCompositionAPI(
           vuexData,
           mixinData,
         );
-        result += `\nconst ${key} = computed(${computedContent});`;
+        result += `\nconst ${key} = computed(() => ${computedContent});`;
       }
     });
   }
@@ -2083,8 +2275,10 @@ function transformToCompositionAPI(
       methodBody,
       hasAxios,
       hasEventBus,
+      hasNuxtCompat,
       refsData,
       hasConfig,
+      hasFilters,
       hasNextTick,
       routerData,
       options,
@@ -2112,8 +2306,10 @@ function transformToCompositionAPI(
       fetchMethod,
       hasAxios,
       hasEventBus,
+      hasNuxtCompat,
       refsData,
       hasConfig,
+      hasFilters,
       hasNextTick,
       routerData,
       options,
@@ -2145,8 +2341,10 @@ function transformToCompositionAPI(
           body,
           hasAxios,
           hasEventBus,
+          hasNuxtCompat,
           refsData,
           hasConfig,
+          hasFilters,
           hasNextTick,
           routerData,
           options,
@@ -2179,12 +2377,24 @@ function transformToCompositionAPI(
 
     // Handle created() method - its content goes directly in setup without wrapper
     if (lifecycleMethods.created) {
-      let transformedContent = transformMethodBody(
-        lifecycleMethods.created,
+      let transformedContent = lifecycleMethods.created;
+
+      if (options?.vuex) {
+        transformedContent = transformStoreUsageInMethods(
+          transformedContent,
+          vuexData,
+          options,
+        );
+      }
+
+      transformedContent = transformMethodBody(
+        transformedContent,
         hasAxios,
         hasEventBus,
+        hasNuxtCompat,
         refsData,
         hasConfig,
+        hasFilters,
         hasNextTick,
         routerData,
         options,
@@ -2195,13 +2405,6 @@ function transformToCompositionAPI(
         vuexData,
         mixinData,
       );
-      if (options?.vuex) {
-        transformedContent = transformStoreUsageInMethods(
-          transformedContent,
-          vuexData,
-          options,
-        );
-      }
       result += `\n\n${transformedContent}`;
     }
 
@@ -2212,12 +2415,24 @@ function transformToCompositionAPI(
 
         const vueHookName = lifecycleMapping[lifecycleName];
         if (vueHookName) {
-          let transformedContent = transformMethodBody(
-            methodContent,
+          let transformedContent = methodContent;
+
+          if (options?.vuex) {
+            transformedContent = transformStoreUsageInMethods(
+              transformedContent,
+              vuexData,
+              options,
+            );
+          }
+
+          transformedContent = transformMethodBody(
+            transformedContent,
             hasAxios,
             hasEventBus,
+            hasNuxtCompat,
             refsData,
             hasConfig,
+            hasFilters,
             hasNextTick,
             routerData,
             options,
@@ -2228,13 +2443,6 @@ function transformToCompositionAPI(
             vuexData,
             mixinData,
           );
-          if (options?.vuex) {
-            transformedContent = transformStoreUsageInMethods(
-              transformedContent,
-              vuexData,
-              options,
-            );
-          }
 
           // Special case for beforeDestroy -> merge with beforeUnmount
           if (lifecycleName === "beforeDestroy") {
@@ -2254,6 +2462,7 @@ function transformToCompositionAPI(
               lifecycleMethods.beforeDestroy,
               hasAxios,
               hasEventBus,
+              hasNuxtCompat,
               refsData,
               hasConfig,
               hasNextTick,
@@ -2289,6 +2498,7 @@ function transformToCompositionAPI(
                 lifecycleMethods.beforeDestroy,
                 hasAxios,
                 hasEventBus,
+                hasNuxtCompat,
                 refsData,
                 hasConfig,
                 hasNextTick,
@@ -2332,8 +2542,10 @@ function transformComputedFunction(
   functionContent,
   hasAxios,
   hasEventBus = false,
+  hasNuxtCompat = false,
   refsData = null,
   hasConfig = false,
+  hasFilters = false,
   hasNextTick = false,
   routerData = null,
   options = null,
@@ -2354,8 +2566,10 @@ function transformComputedFunction(
     functionContent,
     hasAxios,
     hasEventBus,
+    hasNuxtCompat,
     refsData,
     hasConfig,
+    hasFilters,
     hasNextTick,
     routerData,
     options,
@@ -2379,8 +2593,10 @@ function transformMethodBody(
   methodBody,
   hasAxios,
   hasEventBus = false,
+  hasNuxtCompat = false,
   refsData = null,
   hasConfig = false,
+  hasFilters = false,
   hasNextTick = false,
   routerData = null,
   options = null,
@@ -2397,6 +2613,11 @@ function transformMethodBody(
     .replace(/this\.\$i18n\.localeProperties/g, "localeProperties") // Replace this.$i18n.localeProperties with localeProperties
     .replace(/^\s*{\s*/, "") // Remove opening brace and whitespace
     .replace(/\s*}\s*$/, ""); // Remove closing brace and whitespace
+
+  // Transform filters usage
+  if (hasFilters) {
+    transformedBody = transformedBody.replace(/this\.\$options\.filters\.(\w+)/g, "$1");
+  }
 
   // Transform this.$emit calls to emit calls and convert 'input' to 'update:value'
   transformedBody = transformedBody.replace(
@@ -2479,8 +2700,14 @@ function transformMethodBody(
     transformedBody = transformedBody
       .replace(/this\.\$nuxt\.\$on/g, "eventBus.on") // Replace this.$nuxt.$on with eventBus.on
       .replace(/this\.\$nuxt\.\$off/g, "eventBus.off") // Replace this.$nuxt.$off with eventBus.off
-      .replace(/this\.\$nuxt\.\$emit/g, "eventBus.emit") // Replace this.$nuxt.$emit with eventBus.emit
-      .replace(/this\.(\w+)/g, "$1"); // Replace this.methodName with methodName
+      .replace(/this\.\$nuxt\.\$emit/g, "eventBus.emit"); // Replace this.$nuxt.$emit with eventBus.emit
+  }
+
+  // Replace Nuxt compatibility function usage
+  if (hasNuxtCompat) {
+    transformedBody = transformedBody
+      .replace(/this\.\$nuxt\.refresh/g, "refresh") // Replace this.$nuxt.refresh with refresh
+      .replace(/this\.\$nuxt\.context\.redirect/g, "redirect"); // Replace this.$nuxt.context.redirect with redirect
   }
 
   // Replace spread operator with this references
@@ -2582,7 +2809,7 @@ function transformStoreUsageInMethods(methodBody, vuexData, options) {
       transformedBody = transformedBody.replace(methodRegex, (match, methodName) => {
         // Check if this method is actually a Vuex action or mutation
         const isVuexMethod = () => {
-          for (const mapData of vuexData?.methodProps) {
+for (const mapData of vuexData?.methodProps) {
             if (Object.keys(mapData.mappings).includes(methodName)) {
               return true; // Found a mapping for this method
             }

@@ -202,7 +202,8 @@ const title = ref('Hello World');
     export default {
       computed: {
         ...mapGetters({
-          user: 'user/getUser'
+          user: 'user/getUser',
+          hasGrants: 'cart/hasGrants',
         }),
         ...mapState('user', {
           userID: 'userID'
@@ -253,11 +254,14 @@ const title = ref('Hello World');
 import { computed, onMounted } from 'vue';
 import { useHttp } from '@/composables/useHttp';
 import { useUserStore } from '@/stores/user';
+import { useCartStore } from '@/stores/cart';
 
 const http = useHttp();
 const userStore = useUserStore();
+const cartStore = useCartStore();
 
 const user = computed(() => userStore.getUser());
+const hasGrants = computed(() => cartStore.hasGrants);
 const userID = computed(() => userStore.userID);
 
 const someMethod = () => {
@@ -426,6 +430,7 @@ import { ref, computed } from 'vue';
 
 const firstName = ref('John');
 const lastName = ref('Doe');
+
 const fullName = computed({
   get() {
     return \`\${firstName.value} \${lastName.value}\`;
@@ -902,7 +907,7 @@ onMounted(() => {
   });
 
   it("should handle $config", async () => {
-    const sfc = `<template><h1>{{ title }}</h1></template>
+    const sfc = `<template><h1 :title="$config[$i18n.locale].appName">{{ title }}</h1></template>
     <script>
     export default {
       data() {
@@ -917,7 +922,7 @@ onMounted(() => {
 
     const expected = `
 <template>
-  <h1>{{ title }}</h1>
+  <h1 :title="config[locale].appName">{{ title }}</h1>
 </template>
 <script setup>
 import { ref } from 'vue';
