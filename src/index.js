@@ -212,6 +212,11 @@ async function rewriteSFC(sfc, options = {}) {
       .matchAll(/\$store\.(commit|dispatch)\(['"]([^'"]+)['"]/g)
       .forEach((match) => {
         const namespace = match[2].split("/")[0];
+
+        if (!vuexData.usedStores.has(namespace)) {
+          vuexData.usedStores.add(namespace);
+        }
+
         if (namespace && !options.vuex[namespace]) {
           // Create a default store configuration if it doesn't exist
           options.vuex[namespace] = {
@@ -225,6 +230,11 @@ async function rewriteSFC(sfc, options = {}) {
       .matchAll(/\$store\.state\.([^\.]+)/g)
       .forEach((match) => {
         const namespace = match[1];
+
+        if (!vuexData.usedStores.has(namespace)) {
+          vuexData.usedStores.add(namespace);
+        }
+
         if (namespace && !options.vuex[namespace]) {
           // Create a default store configuration if it doesn't exist
           options.vuex[namespace] = {

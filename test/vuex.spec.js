@@ -26,6 +26,10 @@ describe("vuex", () => {
           name: "user",
           importName: "useUserStore",
         },
+        cart: {
+          name: "cart",
+          importName: "useCartStore",
+        },
       },
     });
 
@@ -85,11 +89,12 @@ onMounted(() => {
               console.error('Error posting data:', error);
             }
           },
-          ...mapActions({ fetchUser: 'user/fetchUser' }),
+          ...mapActions({ fetchUser: 'user/fetchUser', checkoutEvent: 'cart/checkoutEvent' }),
           ...mapMutations({ updateUser: 'user/updateUser' })
         },
         mounted() {
           this.fetchUser();
+          this.checkoutEvent();
 
           console.log('Crazy user', this.$store.state.user.userID);
         }
@@ -141,6 +146,7 @@ const postSomething = async () => {
 
 onMounted(() => {
   userStore.fetchUser();
+  cartStore.checkoutEvent();
 
   console.log('Crazy user', userStore.userID);
 });

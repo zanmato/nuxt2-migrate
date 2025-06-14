@@ -182,16 +182,6 @@ function transformToCompositionAPI(
     });
   }
 
-  // Add store imports for direct store usage
-  if (hasDirectStoreUsage && options?.vuex) {
-    Object.entries(options.vuex).forEach(([namespace, storeConfig]) => {
-      // Only add if not already added by vuexData
-      if (!vuexData?.usedStores.has(namespace)) {
-        result += `\nimport { ${storeConfig.importName} } from '@/stores/${storeConfig.name}';`;
-      }
-    });
-  }
-
   // Add mixin composable imports
   if (mixinData && mixinData.usedMixins.length > 0) {
     mixinData.usedMixins.forEach((mixin) => {
@@ -394,17 +384,6 @@ function transformToCompositionAPI(
     vuexData.usedStores.forEach((namespace) => {
       const storeConfig = options?.vuex?.[namespace];
       if (storeConfig) {
-        const instanceName = getStoreInstanceName(storeConfig);
-        result += `\nconst ${instanceName} = ${storeConfig.importName}();`;
-      }
-    });
-  }
-
-  // Add store instances for direct store usage
-  if (hasDirectStoreUsage && options?.vuex) {
-    Object.entries(options.vuex).forEach(([namespace, storeConfig]) => {
-      // Only add if not already added by vuexData
-      if (!vuexData?.usedStores.has(namespace)) {
         const instanceName = getStoreInstanceName(storeConfig);
         result += `\nconst ${instanceName} = ${storeConfig.importName}();`;
       }
@@ -792,7 +771,8 @@ function transformToCompositionAPI(
               // Content will be merged when we process beforeUnmount
               return;
             } else {
-              result += `\n\n${vueHookName}(() => {\n${transformedContent}\n});`;
+              const isAsync = transformedContent.includes("await");
+              result += `\n\n${vueHookName}(${isAsync ? "async " : ""}() => {\n${transformedContent}\n});`;
             }
           } else if (
             lifecycleName === "beforeUnmount" &&
@@ -823,14 +803,16 @@ function transformToCompositionAPI(
                 options,
               );
             }
-            result += `\n\n${vueHookName}(() => {\n${transformedContent}\n});`;
+            const isAsync = transformedContent.includes("await");
+            result += `\n\n${vueHookName}(${isAsync ? "async " : ""}() => {\n${transformedContent}\n});`;
           } else if (lifecycleName === "destroyed") {
             // Check if we already have unmounted, if so merge content
             if (lifecycleMethods.unmounted) {
               // Content will be merged when we process unmounted
               return;
             } else {
-              result += `\n\n${vueHookName}(() => {\n${transformedContent}\n});`;
+              const isAsync = transformedContent.includes("await");
+              result += `\n\n${vueHookName}(${isAsync ? "async " : ""}() => {\n${transformedContent}\n});`;
             }
           } else if (lifecycleName === "unmounted") {
             // Check if we have beforeDestroy to merge
@@ -859,12 +841,16 @@ function transformToCompositionAPI(
                   options,
                 );
               }
-              result += `\n\n${vueHookName}(() => {\n${transformedContent}\n\n${beforeDestroyContent}\n});`;
+
+              const isAsync = transformedContent.includes("await");
+              result += `\n\n${vueHookName}(${isAsync ? "async " : ""}() => {\n${transformedContent}\n\n${beforeDestroyContent}\n});`;
             } else {
-              result += `\n\n${vueHookName}(() => {\n${transformedContent}\n});`;
+              const isAsync = transformedContent.includes("await");
+              result += `\n\n${vueHookName}(${isAsync ? "async " : ""}() => {\n${transformedContent}\n});`;
             }
           } else {
-            result += `\n\n${vueHookName}(() => {\n${transformedContent}\n});`;
+            const isAsync = transformedContent.includes("await");
+            result += `\n\n${vueHookName}(${isAsync ? "async " : ""}() => {\n${transformedContent}\n});`;
           }
         }
       },
@@ -1235,6 +1221,19 @@ function transformMethodBody(
     transformedBody = transformStoreCommitDispatch(transformedBody, options);
   }
 
+  // Transform require() statements to ESM imports using new URL()
+  // Handle template literals (dynamic paths)
+  transformedBody = transformedBody.replace(
+    /require\(\s*`([^`]+)`\s*\)/g,
+    "new URL(`$1`, import.meta.url).href",
+  );
+
+  // Handle regular string literals (static paths)
+  transformedBody = transformedBody.replace(
+    /require\(\s*['"]([^'"]+)['"]\s*\)/g,
+    "new URL('$1', import.meta.url).href",
+  );
+
   return transformedBody;
 }
 
@@ -1264,32 +1263,30 @@ function transformStoreUsageInMethods(methodBody, vuexData, options) {
         stateRegex,
         `${instanceName}.$1`,
       );
-
-      // Transform method calls (actions/mutations) only if they are defined in vuexData
-      const methodRegex = new RegExp(`this\\.(\\w+)\\(`, "g");
-      transformedBody = transformedBody.replace(
-        methodRegex,
-        (match, methodName) => {
-          // Check if this method is actually a Vuex action or mutation
-          const isVuexMethod = () => {
-            for (const mapData of vuexData?.methodProps) {
-              if (Object.keys(mapData.mappings).includes(methodName)) {
-                return true; // Found a mapping for this method
-              }
-            }
-
-            return false;
-          };
-
-          if (isVuexMethod()) {
-            return `${instanceName}.${methodName}(`;
-          }
-
-          // Not a Vuex method, leave it unchanged
-          return match;
-        },
-      );
     });
+
+    // Transform method calls (actions/mutations) - done separately to handle cross-namespace mappings
+    const methodRegex = new RegExp(`this\\.(\\w+)\\(`, "g");
+    transformedBody = transformedBody.replace(
+      methodRegex,
+      (match, methodName) => {
+        // Check if this method is actually a Vuex action or mutation
+        for (const mapData of vuexData?.methodProps || []) {
+          if (Object.keys(mapData.mappings).includes(methodName)) {
+            // Found a mapping for this method, get the correct store instance
+            const methodNamespace = mapData.namespace;
+            const storeConfig = options.vuex[methodNamespace];
+            if (storeConfig) {
+              const instanceName = getStoreInstanceName(storeConfig);
+              return `${instanceName}.${methodName}(`;
+            }
+          }
+        }
+
+        // Not a Vuex method, leave it unchanged
+        return match;
+      },
+    );
   }
 
   return transformedBody;

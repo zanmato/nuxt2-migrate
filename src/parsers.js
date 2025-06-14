@@ -91,16 +91,84 @@ function parseMapFunction(mapFunction, args, content, vuexData, options, type) {
     if (mappingsNode.type === "object") {
       mappings = parseObjectMappings(mappingsNode, content);
 
-      // Extract namespace from values if not explicitly provided
+      // When no explicit namespace is provided and we have mixed namespaces,
+      // we need to create separate map entries for each namespace
       if (!namespace) {
-        Object.values(mappings).forEach((value) => {
+        const namespaceGroups = {};
+        Object.entries(mappings).forEach(([localName, value]) => {
           if (typeof value === "string" && value.includes("/")) {
             const extractedNamespace = value.split("/")[0];
-            if (options.vuex && options.vuex[extractedNamespace]) {
-              namespace = extractedNamespace;
+            // Group by namespace regardless of whether store config exists yet
+            if (!namespaceGroups[extractedNamespace]) {
+              namespaceGroups[extractedNamespace] = {};
             }
+            namespaceGroups[extractedNamespace][localName] = value;
+          } else {
+            // Handle cases without namespace (fallback to root)
+            if (!namespaceGroups[""]) {
+              namespaceGroups[""] = {};
+            }
+            namespaceGroups[""][localName] = value;
           }
         });
+
+        // Create separate map entries for each namespace
+        Object.entries(namespaceGroups).forEach(([ns, nsMappings]) => {
+          if (Object.keys(nsMappings).length > 0) {
+            const functionUsage = {};
+            if (mapFunction === "mapGetters") {
+              Object.entries(nsMappings).forEach(([localName, storePath]) => {
+                let getterName = storePath;
+                if (typeof storePath === "string" && storePath.includes("/")) {
+                  getterName = storePath.split("/")[1];
+                }
+                functionUsage[localName] = getterName.startsWith("get");
+              });
+            }
+
+            const mapData = {
+              type: mapFunction,
+              namespace: ns || null,
+              mappings: nsMappings,
+              category: type,
+              functionUsage,
+            };
+
+            if (type === "computed") {
+              vuexData.computedProps.push(mapData);
+            } else {
+              vuexData.methodProps.push(mapData);
+            }
+
+            // Track used stores
+            if (ns && !vuexData.usedStores.has(ns)) {
+              vuexData.usedStores.add(ns);
+            }
+
+            // Also track stores from embedded namespaces in mappings
+            Object.values(nsMappings).forEach((value) => {
+              if (typeof value === "string" && value.includes("/")) {
+                const embeddedNamespace = value.split("/")[0];
+                vuexData.usedStores.add(embeddedNamespace);
+                if (!options.vuex) {
+                  options.vuex = {};
+                }
+                if (!options.vuex[embeddedNamespace]) {
+                  const capitalizedName =
+                    embeddedNamespace.charAt(0).toUpperCase() +
+                    embeddedNamespace.slice(1);
+                  options.vuex[embeddedNamespace] = {
+                    name: embeddedNamespace,
+                    importName: `use${capitalizedName}Store`,
+                  };
+                }
+              }
+            });
+          }
+        });
+
+        // Return early since we've already processed the mappings
+        return;
       }
     } else if (mappingsNode.type === "array") {
       mappings = parseArrayMappings(mappingsNode, content, mapFunction);
