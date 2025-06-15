@@ -1,0 +1,80 @@
+{
+  "importsRewrite": {
+    "bootstrap-vue": {
+      "name": "bootstrap-vue-next",
+      "componentRewrite": {
+        "BSidebar": "BOffcanvas",
+        "BSkeleton": "BPlaceholder",
+        "BSkeletonWrapper": "BPlaceholderWrapper",
+        "BModal": "BModal",
+        "BButton": "BButton"
+      },
+      "directives": {
+        "v-b-toggle": "vBToggle",
+        "v-b-modal": "vBModal"
+      }
+    },
+    "hooper": {
+      "name": "v-slick-carousel",
+      "componentRewrite": {
+        "Hooper": "VSlickCarousel",
+        "Slide": "VSlide"
+      }
+    },
+    "vue-lazy-hydration": {
+      "name": "vue3-lazy-hydration",
+      "componentRewrite": {
+        "LazyHydrate": "LazyHydrationWrapper"
+      }
+    },
+    "vue-awesome-swiper": {
+      "name": "swiper/vue",
+      "componentRewrite": {
+        "Swiper": "Swiper",
+        "SwiperSlide": "SwiperSlide"
+      }
+    }
+  },
+  "additionalImports": {
+    "ClientOnly": {
+      "importPath": "import ClientOnly from '@/components/ClientOnly.vue';"
+    },
+    "NuxtLink": {
+      "rewriteTo": "router-link"
+    },
+    "LazyLoad": {
+      "importPath": "import LazyLoad from '@/components/LazyLoad.vue';"
+    }
+  },
+  "vuex": {
+    "user": {
+      "name": "user",
+      "importName": "useUserStore"
+    },
+    "cart": {
+      "name": "cart",
+      "importName": "useCartStore"
+    }
+  },
+  "mixins": {
+    "actions": {
+      "name": "useActions",
+      "imports": [
+        "fastAddToCart",
+        "quickBuy",
+        "addToWishlist",
+        "removeFromWishlist"
+      ]
+    },
+    "device": {
+      "name": "useDevice",
+      "imports": [
+        "isMobile",
+        "isTablet",
+        "isDesktop",
+        "getDeviceType",
+        "getScreenSize"
+      ]
+    }
+  }
+}
