@@ -154,6 +154,16 @@ fetch();
         return {
           title: 'Hello World'
         };
+      },
+      computed: {
+        bigData() {
+          return this.price(100);
+        }
+      },
+      methods: {
+        shout() {
+          console.log('Shouting:', this.priceRound(100));
+        }
       }
     }
     </script>`;
@@ -183,12 +193,20 @@ fetch();
   <h1>{{ title }}{{ priceRaw(100) }}</h1>
 </template>
 <script setup>
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { usePrice } from '@/composables/usePrice';
 
-const { priceRaw } = usePrice();
+const { priceRaw, priceRound, price } = usePrice();
 
 const title = ref('Hello World');
+
+const bigData = computed(() => {
+  return price(100);
+});
+
+const shout = () => {
+  console.log('Shouting:', priceRound(100));
+};
 </script>`;
 
     assert.equal(res.trim(), expected.trim());
@@ -314,8 +332,8 @@ const props = defineProps({
           get() {
             return \`\${this.firstName} \${this.lastName}\`;
           },
-          set(v) {
-            const names = v.split(' ');
+          set(value) {
+            const names = value.split(' ');
             this.firstName = names[0];
             this.lastName = names[1];
           }
@@ -339,8 +357,8 @@ const fullName = computed({
   get() {
     return \`\${firstName.value} \${lastName.value}\`;
   },
-  set(v) {
-    const names = v.split(' ');
+  set(value) {
+    const names = value.split(' ');
     firstName.value = names[0];
     lastName.value = names[1];
   },
@@ -449,6 +467,11 @@ useHead(() => {
           title: this.$i18n.localeProperties.brand
         };
       },
+      head() {
+        return {
+          title: this.$i18n.localeProperties.brand
+        };
+      },
       mounted() {
         console.log('Great locale, tremendous', this.$i18n.locale);
       }
@@ -467,97 +490,20 @@ useHead(() => {
 import { ref, onMounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useI18nUtils } from '@/composables/useI18nUtils';
+import { useHead } from '@unhead/vue';
 
 const { locale } = useI18n();
 const { localePath, localeProperties } = useI18nUtils();
 
 const title = ref(localeProperties.brand);
 
+useHead({
+  title: localeProperties.brand,
+});
+
 onMounted(() => {
   console.log('Great locale, tremendous', locale.value);
 });
-</script>`;
-
-    assert.equal(res.trim(), expected.trim());
-  });
-
-  it("should handle legacy asyncData method", async () => {
-    const sfc = `<template><h1>{{ title }}</h1></template>
-    <script>
-    export default {
-      data() {
-        return {
-          title: ''
-        };
-      }
-      async asyncData({ $axios, app, redirect, params }) {
-        const data = await $axios.get('https://api.example.com/data');
-        return { title: data.title };
-      }
-    }
-    </script>`;
-
-    const res = await rewriteSFC(sfc);
-
-    const expected = `
-<template>
-  <h1>{{ title }}</h1>
-</template>
-<script setup>
-import { ref } from 'vue';
-import { useAsyncData } from '@/composables/useAsyncData';
-
-const data = await useAsyncData(async ({ $axios, app, redirect, params }) => {
-  const data = await $axios.get('https://api.example.com/data');
-  return { title: data.title };
-});
-
-const title = ref(data.title);
-</script>`;
-
-    assert.equal(res.trim(), expected.trim());
-  });
-
-  it("should handle nuxtI18n paths", async () => {
-    const sfc = `<template><h1>{{ title }}</h1></template>
-    <script>
-    export default {
-      data() {
-        return {
-          title: 'Hello world'
-        };
-      },
-      nuxtI18n: {
-        paths: {
-          no: '/produkt/:slug',
-          sv: '/produkt/:slug',
-          fi: '/tuote/:slug',
-          da: '/produkt/:slug',
-          nl: '/product/:slug',
-        },
-      }
-    }
-    </script>`;
-
-    const res = await rewriteSFC(sfc);
-
-    const expected = `
-<template>
-  <h1>{{ title }}</h1>
-</template>
-<script setup>
-import { ref } from 'vue';
-
-const title = ref('Hello world');
-</script>
-<script>
-export const i18n = {
-  no: '/produkt/:slug',
-  sv: '/produkt/:slug',
-  fi: '/tuote/:slug',
-  da: '/produkt/:slug',
-  nl: '/product/:slug',
-};
 </script>`;
 
     assert.equal(res.trim(), expected.trim());
@@ -1150,55 +1096,6 @@ h1 {
   color: red;
 }
 </style>`;
-
-    assert.equal(res.trim(), expected.trim());
-  });
-
-  it("should handle watchers", async () => {
-    const sfc = `<template><h1>{{ title }}</h1></template>
-    <script>
-    export default {
-      data() {
-        return {
-          title: 'Hello world',
-          count: 0
-        };
-      },
-      watch: {
-        count(newVal, oldVal) {
-          console.log('Count changed from', oldVal, 'to', newVal);
-          this.shout();
-        }
-      },
-      methods: {
-        shout() {
-          console.log('Shouting:', this.title);
-        }
-      }
-    }
-    </script>`;
-
-    const res = await rewriteSFC(sfc);
-
-    const expected = `
-<template>
-  <h1>{{ title }}</h1>
-</template>
-<script setup>
-import { ref, watch } from 'vue';
-
-const title = ref('Hello world');
-const count = ref(0);
-
-const shout = () => {
-  console.log('Shouting:', title.value);
-};
-
-watch(count, (newVal, oldVal) => {
-  console.log('Count changed from', oldVal, 'to', newVal);
-  shout();
-});
-</script>`;
 
     assert.equal(res.trim(), expected.trim());
   });

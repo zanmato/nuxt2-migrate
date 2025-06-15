@@ -28,6 +28,7 @@ import {
   detectConfigUsage,
   detectNextTickUsage,
   detectRouterUsage,
+  extractTopLevelCode,
 } from "./extractors.js";
 import {
   transformToCompositionAPI,
@@ -75,6 +76,14 @@ async function rewriteSFC(sfc, options = {}) {
       .replace(/\$i18n\.locale/g, "locale")
       .replace(/\$([tnd])\(/g, "$1(")
       .replace(/\$config/g, "config");
+
+    // Transform $store usage in template (both in text and attributes)
+    if (options.vuex) {
+      templateContent = transformStoreUsageInTemplate(
+        templateContent,
+        options.vuex,
+      );
+    }
 
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
@@ -136,11 +145,6 @@ async function rewriteSFC(sfc, options = {}) {
 
         // Transform $config to config
         content = content.replace(/\$config/g, "config");
-
-        // Transform $store usage in template
-        if (options.vuex) {
-          content = transformStoreUsageInTemplate(content, options.vuex);
-        }
 
         text.replace(content);
       },
@@ -252,6 +256,9 @@ async function rewriteSFC(sfc, options = {}) {
     options,
   );
 
+  // Extract top-level code (imports, constants, etc.)
+  const topLevelCode = extractTopLevelCode(jsTree, parsed.script.content);
+
   // Extract nuxtI18n information
   const nuxtI18nData = extractNuxtI18nData(jsTree, parsed.script.content);
 
@@ -337,6 +344,7 @@ async function rewriteSFC(sfc, options = {}) {
     nuxtI18nData,
     hasDirectStoreUsage,
     options,
+    topLevelCode,
   );
 
   // Rebuild the SFC
@@ -372,8 +380,8 @@ async function rewriteSFC(sfc, options = {}) {
       singleQuote: true,
       semi: true,
       tabWidth: 2,
-      printWidth: 120,
-      bracketSameLine: true,
+      printWidth: 80,
+      htmlWhitespaceSensitivity: "ignore",
     });
     return formattedResult;
   } catch (error) {

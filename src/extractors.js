@@ -62,6 +62,11 @@ function extractI18nUsage(expr, i18nMethods) {
   if (expr.includes("localePath")) {
     i18nMethods.add("localePath");
   }
+
+  // Extract localeRoute usage
+  if (expr.includes("localeRoute")) {
+    i18nMethods.add("localeRoute");
+  }
 }
 
 function extractRefsUsage(scriptContent, templateContent) {
@@ -532,11 +537,16 @@ function extractReturnProperties(bodyNode, content) {
         // Extract property names from the return object
         returnValue.namedChildren.forEach((prop) => {
           if (prop.type === "pair") {
+            // Handle regular property syntax: key: value
             const keyNode = prop.namedChildren[0];
             if (keyNode) {
               const key = keyNode.text.replace(/["']/g, "");
               returnProperties.push(key);
             }
+          } else if (prop.type === "shorthand_property_identifier") {
+            // Handle ES6 shorthand property syntax: { key } (equivalent to { key: key })
+            const key = prop.text.replace(/["']/g, "");
+            returnProperties.push(key);
           }
         });
       }
@@ -722,13 +732,29 @@ function extractComputedProperties(tree, content) {
                     const methodBody = method.namedChildren.find(
                       (child) => child.type === "statement_block",
                     );
+                    const methodParams = method.namedChildren.find(
+                      (child) => child.type === "formal_parameters",
+                    );
 
                     if (methodName && methodBody) {
                       const methodContent = content.slice(
                         methodBody.startIndex,
                         methodBody.endIndex,
                       );
-                      getterSetter[methodName.text] = methodContent;
+
+                      // Extract parameters if they exist (for setter methods)
+                      let parameters = null;
+                      if (methodParams) {
+                        parameters = content.slice(
+                          methodParams.startIndex,
+                          methodParams.endIndex,
+                        );
+                      }
+
+                      getterSetter[methodName.text] = {
+                        content: methodContent,
+                        parameters: parameters,
+                      };
                     }
                   }
                 });
@@ -795,27 +821,65 @@ function extractDataProperties(tree, content) {
           const returnValue = returnStatement.namedChildren[0]; // The argument to return
           if (returnValue && returnValue.type === "object") {
             // Extract properties from the return object
-            returnValue.namedChildren.forEach((prop) => {
-              if (prop.type === "pair") {
-                const propKey = prop.namedChildren[0];
-                const propValue = prop.namedChildren[1];
-                if (propKey && propValue) {
-                  const key = propKey.text.replace(/["']/g, ""); // Remove quotes if present
-                  const value = content.slice(
-                    propValue.startIndex,
-                    propValue.endIndex,
-                  );
-                  dataProperties[key] = value;
-                }
-              }
-            });
+            extractPropertiesFromObject(returnValue, content, dataProperties);
           }
+        }
+      }
+    }
+
+    // Look for pair nodes where key is "data" and value is an arrow function: data: () => ({...})
+    if (node.type === "pair") {
+      const keyNode = node.namedChildren[0];
+      const valueNode = node.namedChildren[1];
+
+      if (
+        keyNode &&
+        keyNode.text === "data" &&
+        valueNode &&
+        valueNode.type === "arrow_function"
+      ) {
+        // Find the object expression in the arrow function body
+        // Arrow function can have either expression body or statement block body
+        let objectNode = null;
+
+        if (valueNode.namedChildren.length > 0) {
+          const bodyNode =
+            valueNode.namedChildren[valueNode.namedChildren.length - 1];
+
+          if (bodyNode.type === "object") {
+            // Direct object expression: () => ({...})
+            objectNode = bodyNode;
+          } else if (bodyNode.type === "parenthesized_expression") {
+            // Parenthesized object: () => ({...})
+            const innerNode = bodyNode.namedChildren[0];
+            if (innerNode && innerNode.type === "object") {
+              objectNode = innerNode;
+            }
+          }
+        }
+
+        if (objectNode) {
+          extractPropertiesFromObject(objectNode, content, dataProperties);
         }
       }
     }
 
     // Recursively traverse children
     node.namedChildren.forEach((child) => traverse(child));
+  }
+
+  function extractPropertiesFromObject(objectNode, content, dataProperties) {
+    objectNode.namedChildren.forEach((prop) => {
+      if (prop.type === "pair") {
+        const propKey = prop.namedChildren[0];
+        const propValue = prop.namedChildren[1];
+        if (propKey && propValue) {
+          const key = propKey.text.replace(/["']/g, ""); // Remove quotes if present
+          const value = content.slice(propValue.startIndex, propValue.endIndex);
+          dataProperties[key] = value;
+        }
+      }
+    });
   }
 
   traverse(tree.rootNode);
@@ -1052,9 +1116,7 @@ function detectRouterUsage(content) {
 }
 
 function detectDirectStoreUsage(content) {
-  return (
-    content.includes("$store.commit") || content.includes("$store.dispatch")
-  );
+  return content.includes("$store");
 }
 
 function isLifecycleMethod(methodName) {
@@ -1090,6 +1152,21 @@ function findReturnStatement(functionNode) {
   return search(functionNode);
 }
 
+function extractTopLevelCode(tree, content) {
+  const topLevelCode = [];
+
+  // Traverse only direct children of the program root
+  for (const child of tree.rootNode.namedChildren) {
+    // Skip export statements and comments as they're handled separately
+    if (child.type !== "export_statement" && child.type !== "comment") {
+      const code = content.slice(child.startIndex, child.endIndex);
+      topLevelCode.push(code);
+    }
+  }
+
+  return topLevelCode;
+}
+
 export {
   extractRefsUsage,
   extractMixinData,
@@ -1116,4 +1193,5 @@ export {
   detectNextTickUsage,
   detectRouterUsage,
   detectDirectStoreUsage,
+  extractTopLevelCode,
 };

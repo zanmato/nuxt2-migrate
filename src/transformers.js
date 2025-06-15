@@ -28,6 +28,7 @@ function transformToCompositionAPI(
   nuxtI18nData,
   hasDirectStoreUsage,
   options,
+  topLevelCode = [],
 ) {
   // Note: nuxtI18nData is used for the separate script tag generation in the main function
   // Determine what Vue imports we need
@@ -111,7 +112,11 @@ function transformToCompositionAPI(
 
   // Add vue-i18n import if needed
   const standardI18nMethods = new Set(["t", "n", "d", "locale"]);
-  const customI18nMethods = new Set(["localeProperties", "localePath"]);
+  const customI18nMethods = new Set([
+    "localeProperties",
+    "localePath",
+    "localeRoute",
+  ]);
 
   const hasStandardI18n = Array.from(i18nMethods).some((method) =>
     standardI18nMethods.has(method),
@@ -277,6 +282,31 @@ function transformToCompositionAPI(
 
   result += "\n";
 
+  // === TOP-LEVEL CODE (constants, etc.) ===
+  if (topLevelCode && topLevelCode.length > 0) {
+    // Filter out import statements and keeplist declarations since they're handled separately
+    const nonImportCode = topLevelCode.filter((code) => {
+      const trimmedCode = code.trim();
+      // Skip import statements
+      if (trimmedCode.startsWith("import ")) return false;
+
+      // Skip declarations that are already in keeplist
+      if (importRewriteData && importRewriteData.keeplistDeclarations) {
+        for (const declaration of Object.values(
+          importRewriteData.keeplistDeclarations,
+        )) {
+          if (declaration.trim() === trimmedCode) return false;
+        }
+      }
+
+      return true;
+    });
+
+    if (nonImportCode.length > 0) {
+      result += `\n${nonImportCode.join("\n\n")}\n`;
+    }
+  }
+
   // === 2. USES (COMPOSABLES) ===
   // Add i18n destructuring
   if (hasStandardI18n) {
@@ -335,16 +365,59 @@ function transformToCompositionAPI(
     }
   }
 
-  // Add mixin destructuring (only for used imports)
+  // Add mixin destructuring (detect usage in both template and JavaScript)
   if (mixinData && mixinData.usedMixins.length > 0) {
     mixinData.usedMixins.forEach((mixin) => {
-      // Filter imports to only include those used in template
-      const usedImports = mixin.config.imports.filter((importName) =>
+      // Collect used imports from template
+      const usedImportsFromTemplate = mixin.config.imports.filter((importName) =>
         templateVariables.has(importName),
       );
 
-      if (usedImports.length > 0) {
-        const imports = usedImports.join(", ");
+      // Collect used imports from JavaScript content (methods, computed, etc.)
+      const usedImportsFromJS = new Set();
+      
+      // Scan regular methods for mixin usage
+      Object.values(regularMethods).forEach((methodData) => {
+        const methodContent = typeof methodData === "string" ? methodData : methodData.content;
+        mixin.config.imports.forEach((importName) => {
+          if (methodContent.includes(`this.${importName}(`)) {
+            usedImportsFromJS.add(importName);
+          }
+        });
+      });
+
+      // Scan computed properties for mixin usage
+      if (computedData) {
+        Object.values(computedData).forEach((propData) => {
+          if (propData.type === "getterSetter") {
+            const getterContent = propData.value.get?.content || propData.value.get || "";
+            const setterContent = propData.value.set?.content || propData.value.set || "";
+            
+            mixin.config.imports.forEach((importName) => {
+              if (getterContent.includes(`this.${importName}(`) || 
+                  setterContent.includes(`this.${importName}(`)) {
+                usedImportsFromJS.add(importName);
+              }
+            });
+          } else if (propData.type === "function") {
+            const content = propData.value || "";
+            mixin.config.imports.forEach((importName) => {
+              if (content.includes(`this.${importName}(`)) {
+                usedImportsFromJS.add(importName);
+              }
+            });
+          }
+        });
+      }
+
+      // Combine all used imports (from template and JavaScript)
+      const allUsedImports = new Set([
+        ...usedImportsFromTemplate,
+        ...Array.from(usedImportsFromJS)
+      ]);
+
+      if (allUsedImports.size > 0) {
+        const imports = Array.from(allUsedImports).join(", ");
         result += `\nconst { ${imports} } = ${mixin.config.name}();`;
       }
     });
@@ -478,8 +551,9 @@ function transformToCompositionAPI(
     result += `\n`;
     Object.entries(computedData).forEach(([key, propData]) => {
       if (propData.type === "getterSetter") {
-        let getterContent = propData.value.get || "{}";
-        let setterContent = propData.value.set || "{}";
+        let getterContent = propData.value.get?.content || propData.value.get || "{}";
+        let setterContent = propData.value.set?.content || propData.value.set || "{}";
+        let setterParams = propData.value.set?.parameters || "(v)";
 
         // Transform this references in getter/setter using the same logic as methods
         // But preserve the braces since computed properties expect full function bodies
@@ -520,7 +594,7 @@ function transformToCompositionAPI(
           mixinData,
         );
 
-        result += `\nconst ${key} = computed({\n  get() ${getterContent},\n  set(v) ${setterContent}\n});\n`;
+        result += `\nconst ${key} = computed({\n  get() ${getterContent},\n  set${setterParams} ${setterContent}\n});\n`;
       } else if (propData.type === "function") {
         // Handle simple computed properties (not implemented in current test)
         let computedContent = propData.value;
@@ -649,11 +723,15 @@ function transformToCompositionAPI(
       if (watchConfig.type === "function") {
         // Extract parameters and body from function
         let functionContent = watchConfig.content;
+
+        // Check if the original function was async
+        const isAsync = /^\s*async\s+/.test(functionContent);
+
         const paramsMatch = functionContent.match(/\(([^)]*)\)/);
         const params = paramsMatch ? paramsMatch[1] : "newVal, oldVal";
 
         // Extract function body
-        const bodyMatch = functionContent.match(/\{([\s\S]*)\}$/);
+        const bodyMatch = functionContent.match(/(\{[\s\S]*\})$/);
         let body = bodyMatch ? bodyMatch[1].trim() : "";
 
         // Transform this references in watcher body
@@ -676,7 +754,8 @@ function transformToCompositionAPI(
           mixinData,
         );
 
-        result += `\n\nwatch(${watchName}, (${params}) => {\n  ${body}\n});`;
+        const asyncKeyword = isAsync ? "async " : "";
+        result += `\n\nwatch(${watchName}, ${asyncKeyword}(${params}) => {\n  ${body}\n});`;
       }
     });
   }
@@ -1047,8 +1126,8 @@ function transformMethodBody(
 ) {
   let transformedBody = methodBody
     .replace(/this\.\$([tnd])\(/g, "$1(") // Replace this.$t( with t(
-    .replace(/this\.\$i18n\.locale/g, "locale.value") // Replace this.$i18n.locale with locale.value
     .replace(/this\.\$i18n\.localeProperties/g, "localeProperties") // Replace this.$i18n.localeProperties with localeProperties
+    .replace(/this\.\$i18n\.locale/g, "locale.value") // Replace this.$i18n.locale with locale.value
     .replace(/^\s*{\s*/, "") // Remove opening brace and whitespace
     .replace(/\s*}\s*$/, ""); // Remove closing brace and whitespace
 
@@ -1068,6 +1147,51 @@ function transformMethodBody(
       const transformedEventName =
         eventName === "input" ? "update:value" : eventName;
       return `emit('${transformedEventName}'${args || ""})`;
+    },
+  );
+
+  // Transform Vue 2 $set and $delete to Vue 3 syntax
+  // this.$set(object, key, value) -> object[key] = value or object.key = value
+  transformedBody = transformedBody.replace(
+    /this\.\$set\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)/g,
+    (match, object, key, value) => {
+      // Check if key is a simple quoted string that can be converted to dot notation
+      const trimmedKey = key.trim();
+      // Match quoted strings that contain only valid identifier characters
+      const simpleQuotedString = trimmedKey.match(/^['"]([a-zA-Z_$][a-zA-Z0-9_$]*)['"]$/);
+      
+      if (simpleQuotedString) {
+        // Simple quoted string - use dot notation
+        return `${object}.${simpleQuotedString[1]} = ${value}`;
+      } else if (/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(trimmedKey)) {
+        // Unquoted simple identifier - use dot notation
+        return `${object}.${trimmedKey} = ${value}`;
+      } else {
+        // Complex key (template literal, expression, complex string) - use bracket notation
+        return `${object}[${key}] = ${value}`;
+      }
+    },
+  );
+
+  // this.$delete(object, key) -> delete object[key] or delete object.key
+  transformedBody = transformedBody.replace(
+    /this\.\$delete\(\s*([^,]+)\s*,\s*([^)]+)\s*\)/g,
+    (match, object, key) => {
+      // Check if key is a simple quoted string that can be converted to dot notation
+      const trimmedKey = key.trim();
+      // Match quoted strings that contain only valid identifier characters
+      const simpleQuotedString = trimmedKey.match(/^['"]([a-zA-Z_$][a-zA-Z0-9_$]*)['"]$/);
+      
+      if (simpleQuotedString) {
+        // Simple quoted string - use dot notation
+        return `delete ${object}.${simpleQuotedString[1]}`;
+      } else if (/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(trimmedKey)) {
+        // Unquoted simple identifier - use dot notation
+        return `delete ${object}.${trimmedKey}`;
+      } else {
+        // Complex key (template literal, expression, complex string) - use bracket notation
+        return `delete ${object}[${key}]`;
+      }
     },
   );
 
@@ -1241,8 +1365,8 @@ function transformThisReferencesToRefs(content) {
   // Transform this.$i18n.locale and this.$i18n.localeProperties first
   let transformed = content
     .replace(/this\.\$([tnd])\(/g, "$1(") // Replace this.$t( with t(
-    .replace(/this\.\$i18n\.locale/g, "locale.value")
-    .replace(/this\.\$i18n\.localeProperties/g, "localeProperties");
+    .replace(/this\.\$i18n\.localeProperties/g, "localeProperties")
+    .replace(/this\.\$i18n\.locale/g, "locale.value");
 
   // Transform this.property to property.value
   return transformed.replace(/this\.(\w+)/g, "$1.value");

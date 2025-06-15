@@ -58,7 +58,10 @@ onMounted(() => {
   });
 
   it("should handle vuex usage", async () => {
-    const sfc = `<template><h1>{{ user.name }}{{ userID }}{{ $store.state.user.userID }}</h1></template>
+    const sfc = `<template>
+        <h1>{{ user.name }}{{ userID }}{{ $store.state.user.userID }}</h1>
+        <span v-if="$store.state.user.userID === '123'" :title="$store.state.user.userID">User is 123</span>
+      </template>
       <script>
       import { mapState, mapGetters, mapActions, mapMutations } from 'vuex';
 
@@ -113,6 +116,9 @@ onMounted(() => {
     const expected = `
 <template>
   <h1>{{ user.name }}{{ userID }}{{ userStore.userID }}</h1>
+  <span v-if=\"userStore.userID === '123'\" :title=\"userStore.userID\">
+    User is 123
+  </span>
 </template>
 <script setup>
 import { computed, onMounted } from 'vue';
@@ -208,6 +214,58 @@ onMounted(() => {
   console.log('User updated');
   console.log('User ID:', userID.value);
 });
+</script>`;
+
+    assert.equal(res.trim(), expected.trim());
+  });
+
+  it("should handle imports for direct vuex usage", async () => {
+    const sfc = `<template><h1>Hello</h1></template>
+    <script>
+    export default {
+      methods: {
+        async fetchData() {
+          try {
+            const response = await this.$axios.get('https://api.example.com/data', {
+              params: { userID: this.$store.state.user.userID }
+            });
+            console.log('Data fetched:', response.data);
+          } catch (error) {
+            console.error('Error fetching data:', error);
+          }
+        }
+    }
+    }
+    </script>`;
+
+    const res = await rewriteSFC(sfc, {
+      vuex: {
+        user: {
+          name: "user",
+          importName: "useUserStore",
+        },
+      },
+    });
+
+    const expected = `
+<template><h1>Hello</h1></template>
+<script setup>
+import { useHttp } from '@/composables/useHttp';
+import { useUserStore } from '@/stores/user';
+
+const http = useHttp();
+const userStore = useUserStore();
+
+const fetchData = async () => {
+  try {
+    const response = await http.get('https://api.example.com/data', {
+      params: { userID: userStore.userID },
+    });
+    console.log('Data fetched:', response.data);
+  } catch (error) {
+    console.error('Error fetching data:', error);
+  }
+};
 </script>`;
 
     assert.equal(res.trim(), expected.trim());
